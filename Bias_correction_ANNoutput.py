@@ -16,9 +16,8 @@ import copy
 from pathlib import Path
 
 # --------------------------------------------------------------------
-# STATISTICAL DOWNSCALING: QUANTILE DELTA MAPPING
+# BIAS CORRECTION: QUANTILE MAPPING & QUANTILE DELTA MAPPING 
 # --------------------------------------------------------------------
-# Qunatile Delta Mapping (Post-Processing) using Normal Distribution
 
 # Create directory list for all CMIP6 models
 obs_dir = "/Users/jasslyn/my_data/Graduate_Thesis/data/interim/historical_dataset/"
@@ -95,10 +94,7 @@ for source_id in model_list:
             loc_target, scale_target = stats.norm.fit(target_train_clean, method="MLE")
             loc_input, scale_input = stats.norm.fit(input_train_clean, method="MLE")
     
-            # ---- BARU (QDM): fit distribusi Normal untuk periode EVAL juga ----
-            # Inilah inti perbedaan QDM -- QM standar tidak pernah fit distribusi
-            # input_eval; QDM memerlukannya untuk menentukan tau (kuantil) setiap
-            # nilai input_eval relatif terhadap sebarannya sendiri.
+            # ---- QDM ----.
             loc_input_eval, scale_input_eval = stats.norm.fit(input_eval_clean, method="MLE")
             # ---------------------------------------------------------------
     
@@ -129,7 +125,7 @@ for source_id in model_list:
             return np.full(len(input_eval), np.nan)
     
     # ============================================================================
-    # QM standar for TRAIN set (1970-2002)
+    # QM standard for TRAIN set (1970-2002)
     # ============================================================================
     def QM_norm(target_train, input_train, input_eval):
         """Quantile Mapping (Piani et al. 2010)."""
