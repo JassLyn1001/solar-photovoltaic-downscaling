@@ -62,12 +62,8 @@ for source_id in model_list:
         """
         Quantile Delta Mapping (additive, parametric Normal) -- Cannon et al. (2015).
     
-        min_n_eval: jumlah minimum sampel valid untuk fitting distribusi periode
-        eval. DEFAULT=10 karena periode eval sekarang mencakup 2003-2014
-        (val+test digabung, n=12 tahun/bulan) -- jauh lebih stabil dibanding n=6
-        (val saja) yang dipakai sebelumnya. Ambang 10 (bukan 12 persis) memberi
-        sedikit toleransi kalau ada 1-2 tahun NaN per grid/bulan tanpa langsung
-        menggagalkan seluruh koreksi grid tsb.
+        min_n_eval: minimum number of valid samples required to fit the distribution of the evaluation period
+        (DEFAULT=10)
         """
         target_train = np.asarray(target_train, dtype=float)
         input_train = np.asarray(input_train, dtype=float)
@@ -87,8 +83,7 @@ for source_id in model_list:
     
         target_train_clean = target_train_cal[valid_both]
         input_train_clean = input_train_cal[valid_both]
-    
-        # ---- BARU (QDM): cek validitas sampel input_eval sebelum fitting -----
+
         valid_eval = ~np.isnan(input_eval)
         if np.sum(valid_eval) < min_n_eval:
             return np.full(len(input_eval), np.nan)
@@ -97,7 +92,6 @@ for source_id in model_list:
     
         try:
             # Calculate parameters of NORMAL distribution (loc/mean, scale/std)
-            # -- TRAIN target & TRAIN input, sama seperti QM standar
             loc_target, scale_target = stats.norm.fit(target_train_clean, method="MLE")
             loc_input, scale_input = stats.norm.fit(input_train_clean, method="MLE")
     
@@ -114,32 +108,19 @@ for source_id in model_list:
                 return np.full(len(input_eval), np.nan)
             if scale_input_eval <= 0:  # guard pembagian oleh nol/negatif
                 return np.full(len(input_eval), np.nan)
-    
-            # ---- BARU (QDM): hitung tau per titik dari distribusi EVAL -------
-            # (QM standar TIDAK melakukan ini -- QM standar memakai transfer
-            # function tunggal berbasis regresi pada grid probabilitas tetap,
-            # diterapkan sama rata ke seluruh input_eval)
+
             tau = stats.norm.cdf(input_eval_clean, loc_input_eval, scale_input_eval) # CDF
             tau = np.clip(tau, 0.001, 0.999)  # hindari tau di batas ekstrem (0/1 -> inf)
     
-            # Petakan tau melalui distribusi TRAIN target -> "QM analog"
             x_qm = stats.norm.ppf(tau, loc_target, scale_target)
-    
-            # Petakan tau yang SAMA melalui distribusi TRAIN input -> "historical
-            # analog": nilai setara yang akan muncul di periode TRAIN pada
-            # kuantil yang sama dengan nilai eval ini
+
             x_hist_analog = stats.norm.ppf(tau, loc_input, scale_input)
     
-            # Delta = seberapa jauh nilai eval asli menyimpang dari historical
-            # analog-nya -- inilah sinyal "perubahan" periode eval yang
-            # dipertahankan (bukan ditimpa) oleh QDM
+            # Calculate the delta
             delta = input_eval_clean - x_hist_analog
     
-            # Nilai akhir = QM analog + delta (ADDITIVE QDM)
+            # Corrected value = QM analog + delta (ADDITIVE QDM)
             corrected_clean = x_qm + delta
-            # -------------------------------------------------------------
-    
-            # Kembalikan ke ukuran asli input_eval (isi NaN untuk titik tak valid)
             input_corrected = np.full(len(input_eval), np.nan)
             input_corrected[valid_eval] = corrected_clean
             return input_corrected
@@ -147,13 +128,11 @@ for source_id in model_list:
         except Exception:
             return np.full(len(input_eval), np.nan)
     
-    
     # ============================================================================
-    # QM standar untuk periode TRAIN (1970-2002) -- fungsi asli Anda, tidak diubah
+    # QM standar for TRAIN set (1970-2002)
     # ============================================================================
     def QM_norm(target_train, input_train, input_eval):
-        """Quantile Mapping standar (dipakai utk mengoreksi periode TRAIN itu
-        sendiri -- periode kalibrasi, bukan periode eval terpisah)."""
+        """Quantile Mapping (Piani et al. 2010)."""
         target_train = np.asarray(target_train, dtype=float)
         input_train = np.asarray(input_train, dtype=float)
         input_eval = np.asarray(input_eval, dtype=float)
@@ -197,7 +176,7 @@ for source_id in model_list:
     
     
     # ============================================================================
-    # Terapkan QM (train, 1970-2002) dan QDM (eval, 2003-2014) secara terpisah
+    # Apply QM (train, 1970-2002) and QDM (eval, 2003-2014)
     # ============================================================================
     corrected_train = {}
     corrected_eval = {}
@@ -206,7 +185,7 @@ for source_id in model_list:
         input_train_m = INPUT_train[month]
         input_eval_m = INPUT_eval[month]
     
-        # -- QM standar: koreksi periode TRAIN itu sendiri (input_eval=input_train) --
+        # -- QM: 1970-2002 --
         qm_train = xr.apply_ufunc(
             QM_norm,
             target_train_m, input_train_m, input_train_m,  # input_eval = input_train
@@ -218,7 +197,7 @@ for source_id in model_list:
         qm_train['time'] = input_train_m.time
         corrected_train[month] = qm_train.transpose('time', ...)
     
-        # -- QDM: koreksi periode EVAL (2003-2014) --
+        # -- QDM: 2003-2014 --
         qdm_eval = xr.apply_ufunc(
             QDM_norm,
             target_train_m, input_train_m, input_eval_m,
@@ -231,14 +210,12 @@ for source_id in model_list:
         corrected_eval[month] = qdm_eval.transpose('time', ...)
     
         print(f'QM (train) + QDM (eval) untuk bulan {month} selesai')
-    
-    # Gabungkan tiap bulan, lalu gabungkan train+eval jadi satu deret 1970-2014
+
     ANN_QM_train = xr.concat([corrected_train[m] for m in range(1, 13)],
                             dim='time').sortby('time')
     ANN_QDM_eval = xr.concat([corrected_eval[m] for m in range(1, 13)],
                             dim='time').sortby('time')
-    
-    # Hasil akhir: QM (1970-2002) + QDM (2003-2014), satu deret waktu utuh
+
     ANN_biascorrected = xr.concat([ANN_QM_train, ANN_QDM_eval], dim='time').sortby('time')
 
     # Get attributes from all coordinate dimensions
@@ -272,11 +249,6 @@ for source_id in model_list:
     ANNCDF_da_attrs = ANNCDF_attrs.assign_attrs(da_attrs)
     ANNCDF_ds = ANNCDF_da_attrs.to_dataset(dim=None, name=f'{VAR}')
     ANNCDF_ds= ANNCDF_ds.assign_attrs(ds_attrs_anncdf)
-
-    # Let's quick check for the final results
-    #ANNCDF_ds.PVout[-1,:,:].plot()
-    #ANNCDF_ds.PVout[:,25,50].plot()
-    #PV_target[:,25,50].plot()
 
     outdir_anncdf = f'/Users/jasslyn/my_data/Graduate_Thesis/data/processed/ANNQDM/'# Define file's configurations
     path_anncdf = Path(outdir_anncdf)/source_id
